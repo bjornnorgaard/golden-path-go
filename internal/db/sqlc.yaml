@@ -1,0 +1,23 @@
+version: "2"
+sql:
+  - engine: postgresql
+    queries: queries
+    schema: migrations
+    gen:
+      go:
+        package: store
+        out: store
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        overrides:
+          - column: "todos.id"
+            go_type: { import: "github.com/bjornnorgaard/golden-path-go/internal/id", type: "TodoID" }
+          - column: "todos.owner_user_id"
+            go_type: { import: "github.com/bjornnorgaard/golden-path-go/internal/id", type: "UserID" }
+          - column: "users.id"
+            go_type: { import: "github.com/bjornnorgaard/golden-path-go/internal/id", type: "UserID" }
+          - column: "todos.due_by"
+            go_type: { import: "time", type: "Time", pointer: true }
+          - db_type: "timestamptz"
+            nullable: true
+            go_type: { import: "time", type: "Time", pointer: true }

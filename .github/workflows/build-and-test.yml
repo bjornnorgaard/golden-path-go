@@ -1,0 +1,110 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: build-and-test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Generate, lint and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Generated code is committed. Regenerating must be a no-op, otherwise someone
+      # edited a contract without regenerating, or edited generated code by hand.
+      - name: Regenerate and verify nothing changed
+        run: |
+          go generate ./...
+          go run ./tools/cmd/gen-config-docs > docs/configuration.md
+          git diff --exit-code || { echo "::error::Generated code is stale. Run 'make generate' and commit the result."; exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      # Includes the architecture tests and the black-box suite (Testcontainers; Docker is preinstalled).
+      - name: Test
+        run: go test -race ./...
+
+      - name: Contract breaking-change check
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main --depth=1
+          for spec in todos users; do
+            git show origin/main:api/openapi/$spec.openapi.yaml > /tmp/base-$spec.yaml
+            go run github.com/oasdiff/oasdiff@latest breaking /tmp/base-$spec.yaml api/openapi/$spec.openapi.yaml --fail-on ERR
+          done
+
+  image:
+    name: Build and push image
+    needs: [check]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Image tag
+        id: tag
+        run: echo "value=$(bash .github/scripts/image-tag.sh)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ github.ref == 'refs/heads/main' }}
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}
+          cache-from: type=gha,scope=webapi
+          cache-to: type=gha,mode=max,scope=webapi
+
+  pin:
+    name: Pin test
+    needs: [image]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      SERVICE: webapi
+    steps:
+      - uses: actions/checkout@v6
+      - name: Pin tag in test
+        run: bash .github/scripts/pin-test-and-push.sh "$SERVICE" "${{ needs.image.outputs.tag }}"

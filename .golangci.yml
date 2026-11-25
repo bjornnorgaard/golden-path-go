@@ -1,0 +1,16 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - bodyclose
+    - noctx
+    - sloglint
+    - gosec
+    - misspell
+  exclusions:
+    generated: lax
+    paths:
+      - internal/db/store
+formatters:
+  enable: [gofmt, goimports]

@@ -1,0 +1,37 @@
+dependencies:
+  postgres:
+    databaseName: golden_path_go
+    migrations: startup
+    consumers:
+      webapi:
+        connectionEnv: DATABASE_URL          # NOTE: must be a libpq URL or key/value string (pgx), not an Npgsql string
+        canMigrate: true
+  telemetry:
+    consumers:
+      webapi:
+        endpointEnv: TELEMETRY_COLLECTOR_ENDPOINT   # operator injects the collector endpoint (host:port, OTLP/gRPC)
+
+services:
+  webapi:
+    image:
+      tag: "bootstrap"    # CI pins the first real tag after the first main build; the promote workflow overwrites it afterwards
+    ports:
+      - name: http
+        containerPort: 8080
+        servicePort: 80
+        visibility: internet
+    probes:
+      port: http
+      liveness:
+        path: /healthz
+      readiness:
+        path: /readyz
+    env:
+      - name: TELEMETRY_SERVICE_NAME
+        value: golden-path-go
+      - name: DATABASE_MIGRATE_ON_START   # serialized by a Postgres advisory lock, so replicas are safe
+        value: "true"
+      - name: AUTH_PUBLIC_BASE_URL
+        value: https://golden-path-go.bybear.dk       # confirm with the operator
+      # DATABASE_URL, AUTH_SESSION_SECRET, AUTH_GOOGLE_CLIENT_ID, AUTH_GOOGLE_CLIENT_SECRET —
+      # operator injects as secrets, do not add here

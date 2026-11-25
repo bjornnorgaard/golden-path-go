@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/oapi-codegen/oapi-codegen/HEAD/configuration-schema.json
+package: todosapi
+output: api.gen.go
+generate:
+  std-http-server: true
+  strict-server: true
+  models: true
+  embedded-spec: true
+output-options:
+  skip-prune: true

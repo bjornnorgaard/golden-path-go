@@ -1,338 +1,173 @@
 # golden-path-go
 
-A Go reference application — a "golden path" showing how a production-shaped service fits
-together, with the same goals as its sibling [golden-path-aspnet](../golden-path-aspnet): REST and
-GraphQL over the same feature handlers, PostgreSQL, background jobs, OpenTelemetry, and OAuth
-login in front of all of it, deployed to the operator's Mimir platform.
+A Go reference application — a "golden path" showing how a production-shaped service fits together,
+with the same goals as its sibling [golden-path-aspnet](../golden-path-aspnet): REST and GraphQL over
+the same feature logic, PostgreSQL, background jobs, OpenTelemetry, and OAuth login in front of all of
+it, deployed to the operator's Mimir platform.
 
-> **Status: ideas only.** This README is the design sketch. Nothing below is implemented yet; it
-> exists to agree on direction before writing code. Everything here is a proposal and open to
-> change (see [Open questions](#open-questions)).
+The example domain is the same small Todo/User API (create/get/list/update/toggle/delete, plus
+reminder, notification and overdue-sweep jobs). It exists to exercise the plumbing, not as a feature.
+Because the HTTP and GraphQL contracts are the same as the ASP.NET version's, the same k6 scripts drive
+both — see [docs/benchmarks.md](docs/benchmarks.md) for the head-to-head.
 
 ## The thesis: contracts are the source of truth, generation is the guardrail
 
-The ASP.NET version's central idea is that **the contract is written first, by hand, and
-everything mechanical is derived from it**: `*.openapi.yaml` and `*.graphql` files are the HTTP
-contract; Roslyn source generators emit DTOs, endpoint interfaces and registration; the developer
-only writes the interface implementation (the business logic). If the contract and the code
-disagree, the build fails — with a diagnostic that tells you what to do next.
+The contract is written first, by hand, and everything mechanical is derived from it. If code and
+contract disagree, **the build fails** — with an error that tells you what to do next. That matters
+doubly for agents: a human can hold conventions in their head; an agent can follow a compiler error,
+a failing `go generate` check, or a test that says exactly what to fix.
 
-That matters doubly for agents. A human can hold the conventions in their head; an agent can't, but
-an agent *can* follow a compiler error, a failing `go generate` check, or a linter message that
-says exactly what to fix. So the design rule for this repo is:
+> Prefer a mechanism that makes the wrong thing a build error over a convention in `AGENTS.md`.
+> Where that is impossible, write the convention down **and** add a check.
 
-> **Prefer a mechanism that makes the wrong thing a build error over a convention written in
-> AGENTS.md.** Where we can't, write the convention down *and* add a check.
+| Contract (hand-written) | Generated | Enforced by the compiler / checks |
+| --- | --- | --- |
+| `api/openapi/*.openapi.yaml` | models, `StrictServerInterface`, router, embedded spec (**oapi-codegen**) | Add an operation → build breaks until it is implemented. Return a status the contract doesn't document → doesn't compile (no such response type). |
+| `api/graphql/*.graphql` | executable schema, models, resolver interfaces (**gqlgen**) | Add a field/operation → `ResolverRoot` is no longer satisfied. |
+| `internal/db/migrations/*.sql` + `queries/*.sql` | typed query methods (**sqlc**) | A query that doesn't match the schema fails at generate time; changed signatures break callers. |
+| `config.Config` struct tags | `docs/configuration.md` | A test fails if the doc is stale; startup reports *all* config problems at once. |
+| Tag types (`id.Todo`, `id.User`) | — | `id.TodoID` and `id.UserID` are distinct types: mixing them is a compile error. |
 
-The Go version should reach the same outcome, but **by Go's means, not by transliterating Roslyn**.
-Go has no source generators in the compiler, no attribute-driven registration, no DI container,
-and a strong culture of "explicit over magic". So the mapping is not 1:1, and that's fine:
+Beyond the compiler, [`internal/archtest`](internal/archtest/arch_test.go) turns architectural rules
+into tests (services never import transports, transports never touch the database, only
+`internal/config` reads the environment, no `init()`, generated files are marked and never
+hand-written), and every REST response in the test suite is validated against the OpenAPI contract.
 
-| ASP.NET golden path | Go equivalent (proposed) |
-| --- | --- |
-| `*.openapi.yaml` → generated DTOs + endpoint interfaces | `oapi-codegen` in **strict-server** mode → generated `StrictServerInterface` + typed request/response objects |
-| `*.graphql` → generated GraphQL transport | `gqlgen` (schema-first) → generated resolver interfaces + models |
-| `[Endpoint]` / `[Service]` source-generated registration | **Explicit wiring in `main`/`app.New`** — compiler-checked, greppable. No container. |
-| Missing implementation = diagnostic `GP2001` | Generated interface is not satisfied → compile error (free) |
-| `GP2003` "handlers must not throw, return documented errors" | Strict-server response types only permit *documented* statuses; plus a custom linter for the rest |
-| EF Core + migrations | SQL-first: `sqlc` for typed queries, `goose` (or `atlas`) for migrations |
-| `[StrongId]` generator | Defined types (`type TodoID uuid.UUID`) + a tiny generator or generic `ID[T]` |
-| `AppSettingsConfigurationGenerator` | One typed `Config` struct, loaded from env, with the env-var table generated into docs |
-| Activity tag extension generator | Small generated typed `attribute.KeyValue` helpers from a tag list |
-| TUnit + Testcontainers, black-box over HTTP | `testing` + `testcontainers-go`, `httptest`, black-box over the real router |
-| `dotnet build` fails if generated code is stale | `go generate ./...` + CI `git diff --exit-code` |
-
-## Principles
-
-1. **Contract first, always.** Add or change an operation by editing the spec; never by writing a
-   handler and hoping the docs catch up. The spec is hand-written, reviewed, and small.
-2. **Generated code is committed, never edited.** Go builds from the module as checked in (no
-   build-time codegen step like Roslyn), so generated files live in the repo, are marked
-   `// Code generated ... DO NOT EDIT.`, and CI fails if regenerating changes anything. One
-   command regenerates everything: `go generate ./...` (or `make generate`).
-3. **Let the compiler be the guide.** Strict generated interfaces mean "what do I implement next?"
-   is answered by `go build`. Agents get a precise to-do list from the error output.
-4. **Explicit beats clever.** No reflection-based registration, no init-time side effects, no global
-   DI container. Dependencies are constructor arguments, wired in one place you can read top to
-   bottom. This is the single biggest deliberate departure from the ASP.NET version.
-5. **Standard library first.** `net/http` (with 1.22+ method/path routing), `log/slog`,
-   `database/sql`-compatible `pgx`, `context` everywhere. Add a dependency only when it earns its
-   place, and prefer ones that generate code over ones that use reflection at runtime.
-6. **Black-box tests are the main test unit.** Run the real app in-process against real Postgres.
-7. **Every convention has a check.** If `AGENTS.md` says "do X", there is a test, linter rule, or
-   CI step that fails when X isn't done.
-
-## Proposed layout
-
-Idiomatic Go leans flat and package-oriented, with `internal/` to keep the module's surface small.
-The ASP.NET "vertical slice per feature" translates to **one package per feature area**, not one
-per operation.
+## Architecture
 
 ```text
-golden-path-go/
-├── api/                          # THE CONTRACTS — hand-written, the source of truth
-│   ├── openapi/
-│   │   ├── todos.openapi.yaml
-│   │   └── users.openapi.yaml
-│   └── graphql/
-│       ├── todos.graphql
-│       └── users.graphql
-├── cmd/
-│   └── webapi/main.go            # thin: load config, build app, run, graceful shutdown
-├── internal/
-│   ├── app/                      # composition root: explicit wiring of everything
-│   ├── config/                   # typed Config, env loading, validation at startup
-│   ├── todos/                    # feature package: handlers + domain logic
-│   │   ├── api.gen.go            #   generated: strict server interface + types (oapi-codegen)
-│   │   ├── graphql.gen.go        #   generated: gqlgen resolvers glue
-│   │   ├── server.go             #   hand-written: implements the generated interface
-│   │   ├── service.go            #   hand-written: business rules shared by REST + GraphQL
-│   │   └── server_test.go        #   black-box tests via the real router
-│   ├── users/
-│   ├── db/
-│   │   ├── migrations/           #   goose SQL migrations (hand-written)
-│   │   ├── queries/              #   sqlc input: *.sql (hand-written)
-│   │   └── sqlc/                 #   sqlc output (generated)
-│   ├── jobs/                     # background jobs (see below)
-│   ├── auth/                     # OAuth login, sessions, authz middleware
-│   └── platform/                 # telemetry, health, error handling, OpenAPI/GraphQL docs UI
-├── tools/                        # custom analyzers / codegen helpers (own package, own tests)
-├── deploy/mimir/                 # services.test.yaml / services.prod.yaml
-├── k6/                           # load tests, same shape as the ASP.NET repo
-├── compose.yaml                  # dependencies only (Postgres, OTel collector, dashboard)
-├── Makefile                      # thin task runner: generate, lint, test, run
-├── AGENTS.md
-└── go.mod                        # `tool` directives pin generators (see below)
+            api/openapi/*.yaml          api/graphql/*.graphql          internal/db/{migrations,queries}
+                    │ oapi-codegen              │ gqlgen                          │ sqlc
+                    ▼                           ▼                                  ▼
+   internal/transport/rest/{todos,users}api   internal/transport/graphql   internal/db/store
+        (generated + thin adapter)            (generated + thin adapter)        (generated)
+                    └──────────────┬────────────┘                                  ▲
+                                   ▼                                               │
+                    internal/todos, internal/users  ── business rules ─────────────┘
+                                   │ enqueue (same DB transaction)
+                                   ▼
+                              internal/jobs  (River workers: reminder, notification, overdue sweep)
+
+   internal/app  = composition root: explicit wiring of all of the above, plus middleware:
+   otelhttp → recover → auth (deny by default) → router → [contract validator] → strict handler → adapter
 ```
 
-Whether feature code splits the generated glue into its own sub-package (e.g.
-`internal/todos/todosapi`) so hand-written code never shares a package with generated code is an
-[open question](#open-questions).
+- **REST and GraphQL are thin adapters** over one service layer. Rules (title ≥ 3 non-whitespace
+  characters, paging bounds, …) live once in `internal/todos|users`; transports map types and translate
+  `domain.ValidationError` / `domain.ErrNotFound` into whatever the contract documents.
+- **Strong IDs:** `id.ID[T]` is a UUIDv7 tagged with a phantom type; it works directly with JSON, pgx
+  and sqlc (via column overrides), so the distinction survives all the way to the database layer.
+- **Contract validation at runtime:** every REST request is also validated against the OpenAPI document
+  (required fields, types, patterns, bounds) before reaching an operation, producing the documented `400`.
+  It costs allocations (see the benchmarks) and can be switched off with `API_VALIDATE_REQUESTS=false`
+  because the services enforce all business rules regardless.
+- **Jobs** are [River](https://riverqueue.com) (Postgres-backed). They are enqueued *inside* the
+  service's database transaction, so a job exists if and only if the change that caused it committed.
+- **Auth:** deny by default. A pinned allow-list (`/login`, `/logout`, `/access-denied`,
+  `/auth/callback/google`, `/healthz`, `/readyz`) is reachable anonymously; everything else needs a signed
+  session cookie. Google sign-in is wired up (OIDC); Facebook/Apple are not ported.
+- **Errors:** expected outcomes are documented responses; anything else is a generic `500` problem
+  document (with `traceId`) — never an internal message.
 
-## Contract-first, concretely
+## Running locally
 
-### REST: OpenAPI → strict server
+`compose.yaml` runs only the dependencies (Postgres, OTel collector, Aspire dashboard); the app runs on the host:
 
-Use [`oapi-codegen`](https://github.com/oapi-codegen/oapi-codegen) with **`strict-server`** and the
-`std-http` (Go 1.22 `ServeMux`) target. That generates:
-
-- request/response structs from `components/schemas`,
-- a `StrictServerInterface` with **one method per `operationId`**, and
-- a **response type per documented status code** per operation.
-
-The developer implements the interface:
-
-```go
-func (s *Server) CreateTodo(ctx context.Context, req api.CreateTodoRequestObject) (api.CreateTodoResponseObject, error) {
-    todo, err := s.svc.Create(ctx, req.Body.Title, req.Body.DueBy)
-    if errors.As(err, &validation.Errors{}) {
-        return api.CreateTodo400JSONResponse(validation.ToProblem(err)), nil // documented in the spec
-    }
-    if err != nil {
-        return nil, err // undocumented → 500 via the platform error handler
-    }
-    return api.CreateTodo200JSONResponse{Id: todo.ID, Title: todo.Title /* ... */}, nil
-}
+```bash
+docker compose up -d
+make run          # migrates on start, docs UI at http://localhost:8080/docs, telemetry to the collector
 ```
 
-What this buys us, for free and enforced by `go build`:
+Logging in needs the [Google OAuth setup](#one-time-setup-google-oauth-client). For scripts and load tests,
+mint a session cookie without a browser:
 
-- Add an operation to the spec → build breaks until it's implemented. (≈ `GP2001`.)
-- Return a status that the spec doesn't document → doesn't compile, because there's no such
-  response type. (≈ the *intent* of `GP2003`, enforced more strongly.)
-- A compile-time assertion `var _ api.StrictServerInterface = (*Server)(nil)` makes the error
-  message point at the right place.
-
-Spec hygiene we'd enforce in CI: lint with `vacuum` or `spectral` (every operation has an
-`operationId`, `summary`, error responses use a shared problem schema), and a **breaking-change
-check** against `main` with `oasdiff` so contract changes are deliberate.
-
-### GraphQL: schema-first with gqlgen
-
-[`gqlgen`](https://gqlgen.com) is schema-first and generates resolver interfaces, so the same
-contract-first story applies. The ASP.NET repo keeps the GraphQL contract in lockstep with the
-OpenAPI one ("the GraphQL contract mirrors the operations in …"); we want that *checked*, not just
-stated.
-
-The key idea carried over: **REST and GraphQL resolvers are thin adapters over one service
-layer** (`internal/todos/service.go`). Transport code maps between generated transport types and
-domain types; rules live once. Business logic never imports generated transport types.
-
-Idea to explore: a small test (or generator in `tools/`) that asserts every OpenAPI `operationId`
-has a GraphQL counterpart with the same name and input fields — turning the "mirrors" comment into a
-failing test when the two drift.
-
-### Database: SQL-first
-
-Go's idiom is "write the SQL". [`sqlc`](https://sqlc.dev) turns `queries/*.sql` plus the migration
-schema into typed Go, and checks the queries against the schema at generate time. That is the
-direct analogue of "contract-first" for the data layer: the migration + query files are the
-contract, the Go methods are derived.
-
-- Migrations: [`goose`](https://github.com/pressly/goose) SQL files (or `atlas` if we want
-  declarative schema diffing). Embedded with `go:embed`; applied by a **separate `migrate`
-  subcommand/job**, not implicitly on every app start — the ASP.NET repo's
-  [improvement notes](../golden-path-aspnet/docs/improvement-recommendations.md) call out
-  start-up auto-migration as a multi-instance race, so we can avoid that from day one. (Mimir's
-  `migrations: startup` mode needs checking against this.)
-- Driver: `pgx/v5` with `pgxpool`; `sqlc` generates for it.
-
-### Strong IDs
-
-`type TodoID uuid.UUID` (or a generic `ID[T any]`) prevents passing a `UserID` where a `TodoID` is
-expected, with `UnmarshalText`/`MarshalText` for JSON and `sql.Scanner`/`driver.Valuer` (or pgx
-type registration) for the DB. Generic `ID[Todo]` needs no generator at all; if we want the
-ASP.NET ergonomics of a one-line declaration, that's the right trade. Worth a small spike.
-
-### Configuration
-
-A single `config.Config` struct, loaded from environment variables once at startup, validated
-(fail fast with *all* missing values listed, not just the first), and passed down explicitly. A
-`go generate` step can emit the env-var reference table (name, type, default, secret?) into
-`docs/configuration.md` and into the Mimir manifest comments, so docs and code can't drift. Candidates:
-`caarlos0/env` or `kelseyhightower/envconfig`, or a ~100-line stdlib loader if we want zero deps.
-
-### Telemetry
-
-`log/slog` (JSON) + OpenTelemetry via `otelhttp`/`otelpgx`, exporting OTLP to the same collector
-used in the ASP.NET repo, so the same Aspire dashboard and `aspire otel …` commands work for agents
-debugging locally. Typed span-attribute helpers (`telemetry.TodoID(id)`) can be generated from a
-single list of tag keys.
-
-## Generation workflow
-
-One pinned, reproducible toolchain — no "install these five CLIs first" step. Go 1.24+ supports
-**`tool` directives in `go.mod`**, so generators are versioned with the module:
-
-```text
-// go.mod
-tool (
-    github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
-    github.com/99designs/gqlgen
-    github.com/sqlc-dev/sqlc/cmd/sqlc
-    github.com/pressly/goose/v3/cmd/goose
-)
+```bash
+export DATABASE_URL="postgres://golden-user:golden-pass@localhost:5432/golden-path?sslmode=disable"
+export AUTH_SESSION_SECRET="local-development-session-secret-0123456789"
+export AUTH_COOKIE="$(go run ./tools/cmd/mint-session you@example.com)"
+curl -s -XPOST localhost:8080/todos/create -H "Cookie: $AUTH_COOKIE" -H 'content-type: application/json' -d '{"title":"hello"}'
 ```
 
-Each feature owns its generation via `//go:generate` directives next to the contract it
-consumes:
+### Common commands
 
-```go
-//go:generate go tool oapi-codegen -config oapi.cfg.yaml ../../api/openapi/todos.openapi.yaml
+```bash
+make generate   # regenerate everything from the contracts (go generate ./... + configuration docs)
+make test       # go test -race ./...   (needs Docker: Testcontainers starts PostgreSQL)
+make check      # generate + vet + lint + test — what CI does
+make bench      # micro + in-process HTTP benchmarks
+make docker     # build the scratch image
 ```
 
-- `go generate ./...` regenerates everything, deterministically.
-- **CI regenerates and runs `git diff --exit-code`.** Stale or hand-edited generated code fails
-  the build with a message saying to run `make generate`.
-- Generated files carry the standard `// Code generated … DO NOT EDIT.` header, which Go tooling
-  (gopls, golangci-lint, GitHub's diff UI) already understands and de-emphasises.
-- Only the generators' *inputs* are hand-edited: `api/**`, `internal/db/{migrations,queries}`.
+Generators (`oapi-codegen`, `gqlgen`, `sqlc`, `goose`) are pinned as `tool` directives in `go.mod`
+(`go tool sqlc …`); there is nothing to install. See [AGENTS.md](AGENTS.md) for contributor conventions and
+[docs/configuration.md](docs/configuration.md) for every environment variable.
 
-## Enforcing conventions beyond the compiler
+### One-time setup: Google OAuth client
 
-Where ASP.NET uses analyzer diagnostics, Go has `golangci-lint` plus the `go/analysis` framework
-for project-specific rules in `tools/`. Candidate rules, each with a stable ID and an
-error message that tells the reader (human or agent) what to do:
+1. Create an OAuth 2.0 Client ID (Web application) in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
+2. Authorized redirect URI: `http://localhost:8080/auth/callback/google` (locally).
+3. Provide `AUTH_GOOGLE_CLIENT_ID` / `AUTH_GOOGLE_CLIENT_SECRET` (and `AUTH_PUBLIC_BASE_URL` when not on localhost).
+   Never commit them; deployed environments get them as injected secrets.
 
-- Feature/service code must not import generated transport packages (keeps the layering honest).
-- No `init()` registration and no package-level mutable state outside `main`.
-- Every handler that touches the DB takes a `context.Context` and passes it on.
-- No `panic` in request paths; no direct `os.Getenv` outside `internal/config`.
-- Hand-written files must not contain `// Code generated` (and vice versa) — guards against
-  agents "fixing" generated code by hand.
-- Spec rules (via `spectral`/`vacuum`): every operation documents `400`/`401`/`500` the same way.
+## Image
 
-A convention that can't be turned into a check goes in `AGENTS.md` and gets revisited.
+The `Dockerfile` builds a fully static binary (`CGO_ENABLED=0`, `-trimpath -s -w`) and ships it in a
+`scratch` image with only CA certificates, running as a non-root UID. The result is ~27 MB (see
+[docs/benchmarks.md](docs/benchmarks.md) for the comparison). There is no shell in the image; the
+`webapi healthcheck` subcommand backs the Docker `HEALTHCHECK`, and `webapi migrate` runs migrations as a
+separate step.
 
-## Testing
+## Decisions
 
-- **Black-box first.** A `testapp` helper builds the real `app` (same wiring as `main`) in-process
-  behind `httptest.NewServer`, backed by a real Postgres from `testcontainers-go`, with auth
-  stubbed at one seam. Tests call the public HTTP and GraphQL interface using the *generated
-  client* (`oapi-codegen` can emit one) — so tests are also checked against the contract.
-- Standard `testing` with table-driven tests and `t.Parallel()`; a shared container per package via
-  `TestMain`, with per-test isolation by schema or transaction rollback (to be decided).
-- **Contract conformance test:** hit every documented operation and validate responses against the
-  spec (`kin-openapi` or `libopenapi` validators) so spec and behaviour can't silently diverge.
-- Benchmarks with the standard `testing.B`; `k6/` scripts ported as-is (they only speak HTTP).
-- Generator/analyzer tests live next to `tools/` using `analysistest` and golden files.
+These were open questions in the original design sketch.
 
-## Background jobs
+| Question | Decision | Why |
+| --- | --- | --- |
+| Where does generated code live? | A transport package per contract (`internal/transport/rest/todosapi`, `…/graphql`), with `*.gen.go` files and the hand-written adapter side by side | Services cannot import transport types at all (enforced), and the adapter must satisfy the generated interface in the same package, which gives the best compiler errors. |
+| oapi-codegen vs ogen | **oapi-codegen** (strict server, std-http) | Handles the OpenAPI 3.1 contracts as-is, generates models and the embedded spec used for runtime validation and docs, and its strict mode gives exactly the "undocumented response = compile error" property. |
+| GraphQL | **gqlgen**, schema-first, resolvers hand-written against the generated `ResolverRoot` | No `resolver:` section in `gqlgen.yml`, so gqlgen never rewrites hand-written code. |
+| Router | stdlib `http.ServeMux` (method + path patterns) | The generated server targets it; no extra dependency. |
+| Strong IDs | generic `id.ID[T]` | No generator needed; two lines per new ID type. |
+| Config | `caarlos0/env` + a tiny doc generator | Aggregated errors, typed struct, generated reference. |
+| Jobs | **River** | Transactional enqueue; no extra infrastructure. |
+| Dependency injection | **None — explicit wiring** (see below) | |
+| Migrations | `goose` SQL files, embedded, behind a Postgres advisory lock; startup apply is opt-in via `DATABASE_MIGRATE_ON_START` | Mimir's `migrations: startup` mode needs the app to migrate itself; the lock removes the multi-replica race noted in the ASP.NET repo's improvement list. |
+| `POST`-everything style | Kept (`POST /todos/create` etc.) | Contract parity with the ASP.NET version is what lets one k6 suite and one set of clients drive both. |
 
-Hangfire has no direct Go counterpart. Options, in rough order of preference:
+### Why not Uber `fx` (or any DI container)?
 
-1. **[`river`](https://riverqueue.com)** — Postgres-backed, transactional enqueue (job is created
-   in the same transaction as the todo), typed args, retries, scheduling, UI. Closest in spirit to
-   Hangfire and needs no new infrastructure.
-2. `pgxpool` + a small in-repo scheduler for the two example jobs (reminder, sweep) — least
-   dependency, most code to own.
+[`fx`](https://github.com/uber-go/fx) is a runtime, reflection-based dependency-injection container with
+lifecycle hooks, and it earns its keep in large services made of many independently owned modules. It is
+a poor fit *here*:
 
-Either way, jobs depend on the same service layer as the transports.
+- **It moves wiring errors from compile time to startup.** A missing or ambiguous dependency is found by
+  running the app (or an `fx.ValidateApp` test), not by `go build`. The whole point of this repository is
+  that wrong things fail the build.
+- **The graph is invisible.** With `fx`, "what does this need and who provides it?" is answered by reading
+  provider registrations scattered across modules; an agent (or a new teammate) cannot just follow the
+  call. The composition root here, [`internal/app/app.go`](internal/app/app.go), is ~60 lines you read top to bottom.
+- **There is little to inject.** Ten-odd components, constructed once. Constructors with explicit
+  parameters (`todos.NewService(pool, enqueuer, paging, metrics)`) already *are* the DI.
+- **Lifecycle is simple enough to be explicit:** start jobs, serve, then shut down in reverse order
+  (`App.Run`).
 
-## Auth
+What to do instead as the app grows: keep constructors explicit, and if the composition root becomes
+unwieldy (say, hundreds of lines or multiple binaries sharing large subgraphs), reach for
+[`google/wire`](https://github.com/google/wire) — it is *compile-time* DI that generates plain Go, which fits
+the contract-first/generated philosophy — before reaching for a reflection container. `fx` would be the
+right call mainly when joining an existing fx-based codebase.
 
-Same shape as ASP.NET: every route authenticated by default, an explicit allow-list of anonymous
-routes (`/login`, `/logout`, `/access-denied`, health probes), session cookie, pluggable OAuth
-providers enabled by configuration. In Go: `golang.org/x/oauth2` (+ `coreos/go-oidc` for
-Google/Apple), a middleware that denies by default, and a test (like `RouteAuthorizationTests`)
-that walks the router and fails if a new route is reachable anonymously without being listed.
+## Not implemented (yet)
 
-## Developer & agent experience
+Honest gaps relative to the ASP.NET version and to the original sketch:
 
-- **`AGENTS.md`** from day one: layout, the generate-then-implement loop, "never edit `*.gen.go`",
-  how to read telemetry locally, how to report what was run.
-- **A single task runner** (`make` or `go tool` + a `justfile`): `generate`, `lint`, `test`, `run`,
-  `check` (everything CI does). Agents run `make check` before handing off.
-- **Scaffolding for the common change:** `make new-operation` (or documented steps) that edits the
-  spec, runs generation, and leaves a failing build pointing at the stub to implement — the
-  contract-first loop with the first step done.
-- **Error messages as prompts:** lint and CI failures should state the fix, not just the fault.
-- Devcontainer / `compose.yaml` for dependencies only; the app runs on the host with `go run`.
-- Telemetry-first debugging via the same OTel collector + Aspire dashboard setup.
-
-## Deployment & CI
-
-- Multi-stage Dockerfile → static binary (`CGO_ENABLED=0`) in a distroless/scratch image;
-  non-root, health probes at `/healthz` and `/readyz`.
-- `deploy/mimir/services.{test,prod}.yaml` and the image-tagging scripts carried over from the
-  ASP.NET repo, since the platform contract is language-agnostic.
-- GitHub Actions: `go generate` + diff check, `golangci-lint`, `go vet`, `go test -race`,
-  spec lint + `oasdiff` breaking-change check, `govulncheck`, Docker build smoke test. Dependabot
-  and CodeQL from the start (both are open items in the ASP.NET repo's improvement list).
-
-## Lessons carried over from the ASP.NET improvement list
-
-Things to do right from the start rather than retrofit: auth on everything including the docs UI
-and job dashboard; docs/playground UIs gated by config; migrations separate from app start; rate
-limiting; API versioning decided up front; Dependabot/CodeQL/coverage in CI; Docker build in CI.
-
-## Open questions
-
-1. **Generated code location.** Same package as hand-written code (simple, but mixes them) or a
-   dedicated `*api` sub-package per feature (cleaner boundary, an extra import)?
-2. **oapi-codegen vs. alternatives** (`ogen`, which generates a faster, fully typed server and
-   client with no reflection; or Connect/protobuf if we ever drop the OpenAPI requirement). OpenAPI
-   is the stated contract here, which favours `oapi-codegen` or `ogen` — worth a short spike on
-   both against the Todos spec before committing.
-3. **gqlgen's code-heavy output** vs. keeping GraphQL as a thin optional transport. Is GraphQL a
-   must-have for the Go version, or only a demonstration of "second transport over the same
-   handlers"?
-4. **Router:** stdlib `ServeMux` (preferred) vs. `chi` if middleware composition gets awkward.
-5. **Strong IDs:** generic `ID[T]` vs. generated named types.
-6. **Config library:** dependency vs. small stdlib loader.
-7. **Jobs:** `river` vs. in-repo. Depends on how much we want the Hangfire-parity demo.
-8. **Mimir:** does `migrations: startup` have a job/run-once alternative that fits a separate
-   `migrate` step?
-9. **POST-everything style.** The ASP.NET spec models all operations as `POST /todos/<verb>`.
-   Keep it for parity, or use idiomatic REST verbs/resources in the Go version?
-10. **Module path and Go version pin** (`go.mod`, `toolchain`) — to be fixed when the first
-    commit of code lands.
-
-## Proposed next steps
-
-1. Spike: Todos OpenAPI spec → `oapi-codegen` strict server vs. `ogen`, one operation end to end,
-   with a Testcontainers black-box test.
-2. Decide the layout and generated-code question above; write `AGENTS.md`.
-3. Skeleton: `cmd/webapi`, `internal/app`, `internal/config`, health, telemetry, CI with the
-   regenerate-and-diff check.
-4. Port the Todos feature (REST), then users, then GraphQL, auth, and jobs.
+- Facebook and Apple sign-in (only Google is ported).
+- CORS and forwarded-headers configuration (put a proxy in front, or add middleware in `internal/app`).
+- Rate limiting and API versioning (both are open items in the ASP.NET repo's improvement list too).
+- A job dashboard (River UI is a separate component) and the typed span-attribute helper generator from
+  the sketch: spans carry the standard otelhttp/otelpgx attributes only.
+- `golangci-lint` and `govulncheck` were run locally and are clean; the `oasdiff` breaking-change check,
+  CodeQL and Dependabot are configured but have not run yet — the first CI run is their real test, as it is
+  for the image/pin workflow and the Mimir manifests (the `bootstrap` image tag is a placeholder).
+- The `deploy/mimir` manifests assume the operator injects `DATABASE_URL` in a libpq/pgx-compatible
+  format (not an Npgsql key/value string); confirm with the platform.

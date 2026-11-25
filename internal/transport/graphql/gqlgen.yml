@@ -1,0 +1,17 @@
+# gqlgen generates the executable schema and models. Resolvers are hand-written
+# (resolver.go) against the generated ResolverRoot interface, so a schema change
+# that adds an operation is a compile error until it is implemented.
+schema:
+  - ../../../api/graphql/*.graphql
+exec:
+  filename: generated.gen.go
+  package: graphql
+model:
+  filename: models.gen.go
+  package: graphql
+# No `resolver:` section on purpose: gqlgen must not rewrite hand-written files.
+models:
+  DateTime:
+    model: github.com/99designs/gqlgen/graphql.Time
+  Int:
+    model: github.com/99designs/gqlgen/graphql.Int32
