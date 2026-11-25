@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
@@ -69,7 +69,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.value }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Image tag
         id: tag
@@ -105,6 +105,6 @@ jobs:
     env:
       SERVICE: webapi
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Pin tag in test
         run: bash .github/scripts/pin-test-and-push.sh "$SERVICE" "${{ needs.image.outputs.tag }}"
