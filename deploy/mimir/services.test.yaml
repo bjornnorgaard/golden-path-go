@@ -14,7 +14,7 @@ dependencies:
 services:
   webapi:
     image:
-      tag: "26.11.25-23.38-cfa19cb"    # CI pins the first real tag after the first main build; the promote workflow overwrites it afterwards
+      tag: "26.11.26-12.32-5faca94"    # CI pins the first real tag after the first main build; the promote workflow overwrites it afterwards
     ports:
       - name: http
         containerPort: 8080
