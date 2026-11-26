@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"google.golang.org/grpc"
 
 	"github.com/bjornnorgaard/golden-path-go/internal/auth"
 	"github.com/bjornnorgaard/golden-path-go/internal/config"
@@ -27,6 +29,7 @@ import (
 	"github.com/bjornnorgaard/golden-path-go/internal/platform/telemetry"
 	"github.com/bjornnorgaard/golden-path-go/internal/todos"
 	"github.com/bjornnorgaard/golden-path-go/internal/transport/graphql"
+	"github.com/bjornnorgaard/golden-path-go/internal/transport/grpcapi"
 	"github.com/bjornnorgaard/golden-path-go/internal/transport/rest/todosapi"
 	"github.com/bjornnorgaard/golden-path-go/internal/transport/rest/usersapi"
 	"github.com/bjornnorgaard/golden-path-go/internal/users"
@@ -47,6 +50,7 @@ type App struct {
 	pool    *pgxpool.Pool
 	river   *river.Client[pgx.Tx]
 	handler http.Handler
+	grpc    *grpc.Server
 	routes  []string
 	Users   *users.Service
 }
@@ -96,6 +100,8 @@ func New(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	}
 
 	a := &App{cfg: cfg, log: log, pool: pool, river: riverClient, Users: userSvc}
+	// gRPC: the same services behind the same authenticator. It only listens when GRPC_ADDR is set.
+	a.grpc = grpcapi.NewServer(grpcapi.Options{Todos: todoSvc, Users: userSvc, Authn: authn, Log: log, Reflection: cfg.DocsEnabled})
 	r := &router{mux: http.NewServeMux()}
 
 	// Probes and login are anonymous (see auth.anonymousPaths).
@@ -134,20 +140,34 @@ func (a *App) Handler() http.Handler { return a.handler }
 // Routes lists every registered route pattern (for tests and diagnostics).
 func (a *App) Routes() []string { return a.routes }
 
+// GRPC is the gRPC server. It is always constructed (so tests can serve it on any
+// listener); Run only listens on it when GRPC_ADDR is set.
+func (a *App) GRPC() *grpc.Server { return a.grpc }
+
 // Pool exposes the database pool (for tests and tools).
 func (a *App) Pool() *pgxpool.Pool { return a.pool }
 
 // Run serves HTTP (and runs job workers if enabled) until ctx is cancelled, then shuts down gracefully.
 func (a *App) Run(ctx context.Context) error {
+	var grpcLis net.Listener
+	if a.cfg.GRPCAddr != "" {
+		var err error
+		if grpcLis, err = (&net.ListenConfig{}).Listen(ctx, "tcp", a.cfg.GRPCAddr); err != nil {
+			return fmt.Errorf("listen for gRPC: %w", err)
+		}
+	}
 	if a.cfg.JobsEnabled {
 		if err := a.StartJobs(ctx); err != nil {
 			return err
 		}
 	}
 	srv := &http.Server{Addr: a.cfg.HTTPAddr, Handler: a.handler, ReadHeaderTimeout: 10 * time.Second}
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
-	a.log.Info("listening", "addr", a.cfg.HTTPAddr, "jobs", a.cfg.JobsEnabled)
+	if grpcLis != nil {
+		go func() { errc <- a.grpc.Serve(grpcLis) }()
+	}
+	a.log.Info("listening", "addr", a.cfg.HTTPAddr, "grpc", a.cfg.GRPCAddr, "jobs", a.cfg.JobsEnabled)
 
 	select {
 	case err := <-errc:
@@ -158,6 +178,13 @@ func (a *App) Run(ctx context.Context) error {
 	defer cancel()
 	var errs []error
 	errs = append(errs, srv.Shutdown(shutdownCtx))
+	stopped := make(chan struct{})
+	go func() { a.grpc.GracefulStop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-shutdownCtx.Done():
+		a.grpc.Stop()
+	}
 	if a.cfg.JobsEnabled {
 		errs = append(errs, a.StopJobs(shutdownCtx))
 	}

@@ -28,6 +28,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/bjornnorgaard/golden-path-go/api"
 	"github.com/bjornnorgaard/golden-path-go/internal/app"
@@ -67,9 +68,10 @@ var (
 )
 
 type env struct {
-	app    *app.App
-	server *httptest.Server
-	pool   *pgxpool.Pool
+	app     *app.App
+	server  *httptest.Server
+	pool    *pgxpool.Pool
+	grpcLis *bufconn.Listener // gRPC is served in memory, so no port is needed
 }
 
 func TestMain(m *testing.M) {
@@ -131,10 +133,13 @@ func newEnv(ctx context.Context, mutate func(*config.Config), opts ...func(*app.
 		testPrincipal.UserID, testPrincipal.Email); err != nil {
 		return nil, err
 	}
-	return &env{app: a, server: httptest.NewServer(a.Handler()), pool: a.Pool()}, nil
+	lis := bufconn.Listen(1 << 20)
+	go func() { _ = a.GRPC().Serve(lis) }()
+	return &env{app: a, server: httptest.NewServer(a.Handler()), pool: a.Pool(), grpcLis: lis}, nil
 }
 
 func (e *env) close() {
+	e.app.GRPC().Stop()
 	e.server.Close()
 	e.app.Close()
 }

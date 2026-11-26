@@ -20,6 +20,7 @@ import (
 // generated reference; secret:"true" = never printed or logged.
 type Config struct {
 	HTTPAddr string `env:"HTTP_ADDR" envDefault:":8080" doc:"Listen address of the HTTP server."`
+	GRPCAddr string `env:"GRPC_ADDR" doc:"Listen address of the gRPC server (plaintext HTTP/2; terminate TLS in front of it). Empty disables gRPC. Same authentication as HTTP: a session cookie sent as 'cookie' metadata."`
 	LogLevel string `env:"LOG_LEVEL" envDefault:"info" doc:"Log level: debug, info, warn or error."`
 
 	DatabaseURL            string `env:"DATABASE_URL,required" secret:"true" doc:"PostgreSQL connection string (URL or key/value form)."`
@@ -33,7 +34,7 @@ type Config struct {
 
 	ValidateRequests bool `env:"API_VALIDATE_REQUESTS" envDefault:"true" doc:"Validate every REST request against the OpenAPI contract before it reaches an operation. Business rules are enforced by the services regardless; disabling this only skips the redundant structural checks (it costs roughly 25µs and 45KB of allocations per request)."`
 
-	DocsEnabled bool `env:"DOCS_ENABLED" envDefault:"false" doc:"Serve the API reference (/docs, /openapi/*) and the GraphQL playground. Still requires authentication."`
+	DocsEnabled bool `env:"DOCS_ENABLED" envDefault:"false" doc:"Serve the API reference (/docs, /openapi/*), the GraphQL playground and gRPC reflection. Still requires authentication."`
 	JobsEnabled bool `env:"JOBS_ENABLED" envDefault:"true" doc:"Run the background job workers in this process. Jobs can always be enqueued."`
 
 	AuthSessionSecret string        `env:"AUTH_SESSION_SECRET,required" secret:"true" doc:"Key (min 32 bytes) used to sign session cookies."`

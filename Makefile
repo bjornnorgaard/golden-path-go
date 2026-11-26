@@ -8,6 +8,7 @@ generate: ## Regenerate all generated code from the hand-written contracts
 lint:
 	go vet ./...
 	golangci-lint run
+	go tool buf lint
 
 test: ## Unit + architecture + black-box tests (needs Docker for Testcontainers)
 	go test -race ./...
@@ -21,7 +22,7 @@ run: ## Run against the compose dependencies (docker compose up -d first)
 	DATABASE_URL="postgres://golden-user:golden-pass@localhost:5432/golden-path?sslmode=disable" \
 	DATABASE_MIGRATE_ON_START=true DOCS_ENABLED=true \
 	AUTH_SESSION_SECRET="local-development-session-secret-0123456789" \
-	TELEMETRY_COLLECTOR_ENDPOINT=localhost:4317 \
+	TELEMETRY_COLLECTOR_ENDPOINT=localhost:4317 GRPC_ADDR=:9090 \
 	go run ./cmd/webapi
 
 migrate:

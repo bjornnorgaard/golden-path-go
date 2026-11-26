@@ -7,6 +7,7 @@ All configuration is read from environment variables at startup.
 | Variable | Type | Default | Required | Secret | Description |
 | --- | --- | --- | --- | --- | --- |
 | `HTTP_ADDR` | string | `:8080` | no | no | Listen address of the HTTP server. |
+| `GRPC_ADDR` | string | — | no | no | Listen address of the gRPC server (plaintext HTTP/2; terminate TLS in front of it). Empty disables gRPC. Same authentication as HTTP: a session cookie sent as 'cookie' metadata. |
 | `LOG_LEVEL` | string | `info` | no | no | Log level: debug, info, warn or error. |
 | `DATABASE_URL` | string | — | yes | yes | PostgreSQL connection string (URL or key/value form). |
 | `DATABASE_MIGRATE_ON_START` | bool | `false` | no | no | Apply pending migrations before serving. Guarded by a Postgres advisory lock, so concurrent instances are safe. Prefer the separate 'migrate' command where the platform allows it. |
@@ -15,7 +16,7 @@ All configuration is read from environment variables at startup.
 | `PAGING_DEFAULT_PAGE_SIZE` | int32 | `20` | no | no | Page size used when a list request omits limit. |
 | `PAGING_MAX_PAGE_SIZE` | int32 | `100` | no | no | Largest page size ever returned; larger limits are clamped. |
 | `API_VALIDATE_REQUESTS` | bool | `true` | no | no | Validate every REST request against the OpenAPI contract before it reaches an operation. Business rules are enforced by the services regardless; disabling this only skips the redundant structural checks (it costs roughly 25µs and 45KB of allocations per request). |
-| `DOCS_ENABLED` | bool | `false` | no | no | Serve the API reference (/docs, /openapi/*) and the GraphQL playground. Still requires authentication. |
+| `DOCS_ENABLED` | bool | `false` | no | no | Serve the API reference (/docs, /openapi/*), the GraphQL playground and gRPC reflection. Still requires authentication. |
 | `JOBS_ENABLED` | bool | `true` | no | no | Run the background job workers in this process. Jobs can always be enqueued. |
 | `AUTH_SESSION_SECRET` | string | — | yes | yes | Key (min 32 bytes) used to sign session cookies. |
 | `AUTH_SESSION_TTL` | time.Duration | `336h` | no | no | Session lifetime. |

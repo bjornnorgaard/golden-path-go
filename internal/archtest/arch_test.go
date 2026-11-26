@@ -142,11 +142,11 @@ func TestNoInitFunctions(t *testing.T) {
 	}
 }
 
-// Generated code is clearly marked and never hand-edited: only *.gen.go / sqlc output may carry the header,
-// and every *.gen.go must carry it.
+// Generated code is clearly marked and never hand-edited: only *.gen.go / *.pb.go / sqlc output may carry the header,
+// and every *.gen.go / *.pb.go must carry it.
 func TestGeneratedFilesAreMarked(t *testing.T) {
 	for _, f := range repoFiles(t) {
-		isGenName := strings.HasSuffix(f.path, ".gen.go") || strings.HasPrefix(f.path, "internal/db/store/")
+		isGenName := strings.HasSuffix(f.path, ".gen.go") || strings.HasSuffix(f.path, ".pb.go") || strings.HasPrefix(f.path, "internal/db/store/")
 		switch {
 		case isGenName && !f.generated:
 			t.Errorf("%s looks generated but has no \"Code generated ... DO NOT EDIT.\" header: do not hand-write files with generated names", f.path)
