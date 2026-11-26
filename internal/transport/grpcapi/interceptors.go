@@ -129,6 +129,12 @@ func translateErrors(log *slog.Logger) grpc.UnaryServerInterceptor {
 		case errors.Is(err, domain.ErrNotFound):
 			return nil, status.Error(grpccodes.NotFound, "Not found.")
 		}
+		switch {
+		case errors.Is(err, context.Canceled):
+			return nil, status.Error(grpccodes.Canceled, "The call was cancelled.")
+		case errors.Is(err, context.DeadlineExceeded):
+			return nil, status.Error(grpccodes.DeadlineExceeded, "The deadline expired.")
+		}
 		if _, ok := status.FromError(err); ok {
 			return nil, err // already a status (e.g. from an interceptor)
 		}

@@ -69,7 +69,7 @@ hand-written), and every REST response in the test suite is validated against th
   TLS in front of it, as for HTTP). Every RPC passes the same panic-recovery → authentication → error-translation
   chain; authentication reuses the HTTP `Authenticator`, reading the session cookie from `cookie` metadata. The
   anonymous allow-list is only the standard `grpc.health.v1.Health/Check`, pinned by a test, and *streaming* RPCs
-  are denied by default too. Reflection is on only with `DOCS_ENABLED` (and still needs authentication). Try it with
+  are denied by default too. Reflection is on only with `DOCS_ENABLED` (and still needs authentication). gRPC clients have no way to obtain a session cookie yet (it is issued only by the browser Google flow), so today it is usable only with a copied cookie or `mint-session`; a service-credential `Authenticator` is the missing piece before calling it production-ready. Health is a static SERVING, not tied to database readiness. Try it with
   `grpcurl -plaintext -H "Cookie: $AUTH_COOKIE" -d '{"title":"hello"}' localhost:9090 goldenpath.todos.v1.TodosService/CreateTodo`.
 - **Jobs** are [River](https://riverqueue.com) (Postgres-backed). They are enqueued *inside* the
   service's database transaction, so a job exists if and only if the change that caused it committed.
@@ -142,7 +142,7 @@ These were open questions in the original design sketch.
 | Jobs | **River** | Transactional enqueue; no extra infrastructure. |
 | Dependency injection | **None — explicit wiring** (see below) | |
 | Migrations | `goose` SQL files, embedded, behind a Postgres advisory lock; startup apply is opt-in via `DATABASE_MIGRATE_ON_START` | Mimir's `migrations: startup` mode needs the app to migrate itself; the lock removes the multi-replica race noted in the ASP.NET repo's improvement list. |
-| gRPC stack | **buf** + `protoc-gen-go` + `protoc-gen-go-grpc`, all pinned as `tool` directives; stubs under `grpcapi/gen` | No `protoc` to install; `buf lint`/`buf breaking` give the gRPC equivalent of the oasdiff check. buf currently requires a pre-release `google.golang.org/protobuf` (v1.37.0-rc.1), so go.mod pins that. |
+| gRPC stack | **buf** + `protoc-gen-go` + `protoc-gen-go-grpc`, all pinned as `tool` directives; stubs under `grpcapi/gen` | No `protoc` to install; `buf lint`/`buf breaking` give the gRPC equivalent of the oasdiff check. buf currently requires a pseudo-version of `google.golang.org/protobuf` newer than the last stable release (v1.36.12), so go.mod resolves to the pre-release v1.37.0-rc.1 (the generated headers say so). Move to the first stable release when it exists. |
 | gRPC listener | Separate port, not multiplexed on the HTTP port | `grpc.Server.ServeHTTP` is documented as less performant, and a separate listener keeps interceptors, health and reflection first-class. |
 | `POST`-everything style | Kept (`POST /todos/create` etc.) | Contract parity with the ASP.NET version is what lets one k6 suite and one set of clients drive both. |
 

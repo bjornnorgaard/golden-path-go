@@ -158,6 +158,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	if a.cfg.JobsEnabled {
 		if err := a.StartJobs(ctx); err != nil {
+			if grpcLis != nil {
+				_ = grpcLis.Close()
+			}
 			return err
 		}
 	}
@@ -169,26 +172,39 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	a.log.Info("listening", "addr", a.cfg.HTTPAddr, "grpc", a.cfg.GRPCAddr, "jobs", a.cfg.JobsEnabled)
 
+	// Either a server failing or cancellation ends the run; in both cases everything is
+	// shut down, so a failed listener never leaves the other transport or the workers running.
+	var runErr error
 	select {
-	case err := <-errc:
-		return err
+	case runErr = <-errc:
 	case <-ctx.Done():
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	var errs []error
-	errs = append(errs, srv.Shutdown(shutdownCtx))
-	stopped := make(chan struct{})
-	go func() { a.grpc.GracefulStop(); close(stopped) }()
+
+	// Drain HTTP and gRPC concurrently under one deadline.
+	httpDone := make(chan error, 1)
+	go func() { httpDone <- srv.Shutdown(shutdownCtx) }()
+	grpcDone := make(chan struct{})
+	go func() { a.grpc.GracefulStop(); close(grpcDone) }()
 	select {
-	case <-stopped:
+	case <-grpcDone:
 	case <-shutdownCtx.Done():
 		a.grpc.Stop()
 	}
+	errs := []error{ignoreClosed(runErr), <-httpDone}
 	if a.cfg.JobsEnabled {
 		errs = append(errs, a.StopJobs(shutdownCtx))
 	}
 	return errors.Join(errs...)
+}
+
+// ignoreClosed drops the benign "server closed" result of a server that was shut down on purpose.
+func ignoreClosed(err error) error {
+	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, grpc.ErrServerStopped) {
+		return nil
+	}
+	return err
 }
 
 // StartJobs starts the background job workers in this process.
