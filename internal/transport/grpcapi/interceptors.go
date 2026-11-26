@@ -31,7 +31,7 @@ var anonymousMethods = map[string]struct{}{
 
 // healthCheck is the full method name of the standard health check,
 // which orchestrators call without credentials.
-const healthCheck = "/grpc.health.v1.Health/Check" 
+const healthCheck = "/grpc.health.v1.Health/Check"
 
 // AnonymousMethods returns a copy of the allow-list, for tests.
 func AnonymousMethods() []string {

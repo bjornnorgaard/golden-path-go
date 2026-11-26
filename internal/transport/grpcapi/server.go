@@ -10,9 +10,9 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	"github.com/bjornnorgaard/golden-path-go/internal/auth"
+	"github.com/bjornnorgaard/golden-path-go/internal/todos"
 	todosv1 "github.com/bjornnorgaard/golden-path-go/internal/transport/grpcapi/gen/goldenpath/todos/v1"
 	usersv1 "github.com/bjornnorgaard/golden-path-go/internal/transport/grpcapi/gen/goldenpath/users/v1"
-	"github.com/bjornnorgaard/golden-path-go/internal/todos"
 	"github.com/bjornnorgaard/golden-path-go/internal/users"
 )
 

@@ -163,8 +163,11 @@ func TestGRPC_Todos_InvalidInputAndNotFound(t *testing.T) {
 	})
 	t.Run("malformed id is reported against id", func(t *testing.T) {
 		for name, call := range map[string]func() error{
-			"get":    func() error { _, e := todos.GetTodoById(c.ctx(), &todosv1.GetTodoByIdRequest{Id: "nope"}); return e },
-			"update": func() error { _, e := todos.UpdateTodo(c.ctx(), &todosv1.UpdateTodoRequest{Id: "nope", Title: "long enough"}); return e },
+			"get": func() error { _, e := todos.GetTodoById(c.ctx(), &todosv1.GetTodoByIdRequest{Id: "nope"}); return e },
+			"update": func() error {
+				_, e := todos.UpdateTodo(c.ctx(), &todosv1.UpdateTodoRequest{Id: "nope", Title: "long enough"})
+				return e
+			},
 			"toggle": func() error { _, e := todos.ToggleTodo(c.ctx(), &todosv1.ToggleTodoRequest{Id: "nope"}); return e },
 			"delete": func() error { _, e := todos.DeleteTodo(c.ctx(), &todosv1.DeleteTodoRequest{Id: "nope"}); return e },
 		} {
@@ -180,8 +183,11 @@ func TestGRPC_Todos_InvalidInputAndNotFound(t *testing.T) {
 	})
 	t.Run("unknown id is NOT_FOUND", func(t *testing.T) {
 		for name, call := range map[string]func() error{
-			"get":    func() error { _, e := todos.GetTodoById(c.ctx(), &todosv1.GetTodoByIdRequest{Id: missing}); return e },
-			"update": func() error { _, e := todos.UpdateTodo(c.ctx(), &todosv1.UpdateTodoRequest{Id: missing, Title: "long enough"}); return e },
+			"get": func() error { _, e := todos.GetTodoById(c.ctx(), &todosv1.GetTodoByIdRequest{Id: missing}); return e },
+			"update": func() error {
+				_, e := todos.UpdateTodo(c.ctx(), &todosv1.UpdateTodoRequest{Id: missing, Title: "long enough"})
+				return e
+			},
 			"toggle": func() error { _, e := todos.ToggleTodo(c.ctx(), &todosv1.ToggleTodoRequest{Id: missing}); return e },
 			"delete": func() error { _, e := todos.DeleteTodo(c.ctx(), &todosv1.DeleteTodoRequest{Id: missing}); return e },
 		} {

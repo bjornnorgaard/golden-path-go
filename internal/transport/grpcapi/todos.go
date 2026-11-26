@@ -10,8 +10,8 @@ import (
 	"github.com/bjornnorgaard/golden-path-go/internal/auth"
 	"github.com/bjornnorgaard/golden-path-go/internal/domain"
 	"github.com/bjornnorgaard/golden-path-go/internal/id"
-	todosv1 "github.com/bjornnorgaard/golden-path-go/internal/transport/grpcapi/gen/goldenpath/todos/v1"
 	"github.com/bjornnorgaard/golden-path-go/internal/todos"
+	todosv1 "github.com/bjornnorgaard/golden-path-go/internal/transport/grpcapi/gen/goldenpath/todos/v1"
 )
 
 // todosServer adapts the todo service to the generated TodosServiceServer. It maps
