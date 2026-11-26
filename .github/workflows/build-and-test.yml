@@ -33,6 +33,9 @@ jobs:
           go run ./tools/cmd/gen-config-docs > docs/configuration.md
           git diff --exit-code || { echo "::error::Generated code is stale. Run 'make generate' and commit the result."; exit 1; }
 
+      - name: gRPC contract lint
+        run: go tool buf lint
+
       - name: Vet
         run: go vet ./...
 
@@ -45,6 +48,17 @@ jobs:
       # Includes the architecture tests and the black-box suite (Testcontainers; Docker is preinstalled).
       - name: Test
         run: go test -race ./...
+
+      - name: gRPC contract breaking-change check
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main --depth=1
+          # The very first gRPC change has no base contract to compare against.
+          if git cat-file -e origin/main:buf.yaml 2>/dev/null; then
+            go tool buf breaking --against '.git#branch=origin/main'
+          else
+            echo "No gRPC contract on main yet; skipping."
+          fi
 
       - name: Contract breaking-change check
         if: github.event_name == 'pull_request'

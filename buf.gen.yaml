@@ -1,0 +1,17 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/bjornnorgaard/golden-path-go/internal/transport/grpcapi/gen
+plugins:
+  - local: [go, tool, protoc-gen-go]
+    out: gen
+    opt: paths=source_relative
+  # Without the Unimplemented* embedding a service interface that gains an RPC stops
+  # compiling until the adapter implements it (the same property as the other contracts).
+  - local: [go, tool, protoc-gen-go-grpc]
+    out: gen
+    opt:
+      - paths=source_relative
+      - require_unimplemented_servers=false

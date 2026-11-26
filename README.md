@@ -1,7 +1,7 @@
 # golden-path-go
 
 A Go reference application — a "golden path" showing how a production-shaped service fits together,
-with the same goals as its sibling [golden-path-aspnet](../golden-path-aspnet): REST and GraphQL over
+with the same goals as its sibling [golden-path-aspnet](../golden-path-aspnet): REST, GraphQL and gRPC over
 the same feature logic, PostgreSQL, background jobs, OpenTelemetry, and OAuth login in front of all of
 it, deployed to the operator's Mimir platform.
 
@@ -24,6 +24,7 @@ a failing `go generate` check, or a test that says exactly what to fix.
 | --- | --- | --- |
 | `api/openapi/*.openapi.yaml` | models, `StrictServerInterface`, router, embedded spec (**oapi-codegen**) | Add an operation → build breaks until it is implemented. Return a status the contract doesn't document → doesn't compile (no such response type). |
 | `api/graphql/*.graphql` | executable schema, models, resolver interfaces (**gqlgen**) | Add a field/operation → `ResolverRoot` is no longer satisfied. |
+| `api/grpc/**/*.proto` | messages and service interfaces (**buf** + `protoc-gen-go` / `protoc-gen-go-grpc`) | Add an RPC → the generated `…ServiceServer` interface is no longer satisfied (generated without the `Unimplemented*` embedding). `buf lint` and `buf breaking` guard the contract in CI. |
 | `internal/db/migrations/*.sql` + `queries/*.sql` | typed query methods (**sqlc**) | A query that doesn't match the schema fails at generate time; changed signatures break callers. |
 | `config.Config` struct tags | `docs/configuration.md` | A test fails if the doc is stale; startup reports *all* config problems at once. |
 | Tag types (`id.Todo`, `id.User`) | — | `id.TodoID` and `id.UserID` are distinct types: mixing them is a compile error. |
@@ -48,19 +49,28 @@ hand-written), and every REST response in the test suite is validated against th
                                    ▼
                               internal/jobs  (River workers: reminder, notification, overdue sweep)
 
+   internal/transport/grpcapi   (generated stubs in gen/ + thin adapter, own listener via GRPC_ADDR)
+
    internal/app  = composition root: explicit wiring of all of the above, plus middleware:
    otelhttp → recover → auth (deny by default) → router → [contract validator] → strict handler → adapter
 ```
 
-- **REST and GraphQL are thin adapters** over one service layer. Rules (title ≥ 3 non-whitespace
+- **REST, GraphQL and gRPC are thin adapters** over one service layer. Rules (title ≥ 3 non-whitespace
   characters, paging bounds, …) live once in `internal/todos|users`; transports map types and translate
-  `domain.ValidationError` / `domain.ErrNotFound` into whatever the contract documents.
+  `domain.ValidationError` / `domain.ErrNotFound` into whatever the contract documents (for gRPC:
+  `INVALID_ARGUMENT` with a `google.rpc.BadRequest` detail, and `NOT_FOUND`).
 - **Strong IDs:** `id.ID[T]` is a UUIDv7 tagged with a phantom type; it works directly with JSON, pgx
   and sqlc (via column overrides), so the distinction survives all the way to the database layer.
 - **Contract validation at runtime:** every REST request is also validated against the OpenAPI document
   (required fields, types, patterns, bounds) before reaching an operation, producing the documented `400`.
   It costs allocations (see the benchmarks) and can be switched off with `API_VALIDATE_REQUESTS=false`
   because the services enforce all business rules regardless.
+- **gRPC** is served on its own plaintext HTTP/2 listener, enabled by setting `GRPC_ADDR` (e.g. `:9090`; terminate
+  TLS in front of it, as for HTTP). Every RPC passes the same panic-recovery → authentication → error-translation
+  chain; authentication reuses the HTTP `Authenticator`, reading the session cookie from `cookie` metadata. The
+  anonymous allow-list is only the standard `grpc.health.v1.Health/Check`, pinned by a test, and *streaming* RPCs
+  are denied by default too. Reflection is on only with `DOCS_ENABLED` (and still needs authentication). gRPC clients have no way to obtain a session cookie yet (it is issued only by the browser Google flow), so today it is usable only with a copied cookie or `mint-session`; a service-credential `Authenticator` is the missing piece before calling it production-ready. Health is a static SERVING, not tied to database readiness. Try it with
+  `grpcurl -plaintext -H "Cookie: $AUTH_COOKIE" -d '{"title":"hello"}' localhost:9090 goldenpath.todos.v1.TodosService/CreateTodo`.
 - **Jobs** are [River](https://riverqueue.com) (Postgres-backed). They are enqueued *inside* the
   service's database transaction, so a job exists if and only if the change that caused it committed.
 - **Auth:** deny by default. A pinned allow-list (`/login`, `/logout`, `/access-denied`,
@@ -132,6 +142,8 @@ These were open questions in the original design sketch.
 | Jobs | **River** | Transactional enqueue; no extra infrastructure. |
 | Dependency injection | **None — explicit wiring** (see below) | |
 | Migrations | `goose` SQL files, embedded, behind a Postgres advisory lock; startup apply is opt-in via `DATABASE_MIGRATE_ON_START` | Mimir's `migrations: startup` mode needs the app to migrate itself; the lock removes the multi-replica race noted in the ASP.NET repo's improvement list. |
+| gRPC stack | **buf** + `protoc-gen-go` + `protoc-gen-go-grpc`, all pinned as `tool` directives; stubs under `grpcapi/gen` | No `protoc` to install; `buf lint`/`buf breaking` give the gRPC equivalent of the oasdiff check. buf currently requires a pseudo-version of `google.golang.org/protobuf` newer than the last stable release (v1.36.12), so go.mod resolves to the pre-release v1.37.0-rc.1 (the generated headers say so). Move to the first stable release when it exists. |
+| gRPC listener | Separate port, not multiplexed on the HTTP port | `grpc.Server.ServeHTTP` is documented as less performant, and a separate listener keeps interceptors, health and reflection first-class. |
 | `POST`-everything style | Kept (`POST /todos/create` etc.) | Contract parity with the ASP.NET version is what lets one k6 suite and one set of clients drive both. |
 
 ### Why not Uber `fx` (or any DI container)?
@@ -162,6 +174,8 @@ right call mainly when joining an existing fx-based codebase.
 Honest gaps relative to the ASP.NET version and to the original sketch:
 
 - Facebook and Apple sign-in (only Google is ported).
+- gRPC in the Mimir manifests (`deploy/mimir/*`): the platform's schema for a second, non-HTTP port is not known here, so
+  no `GRPC_ADDR` is set and gRPC is off when deployed. gRPC is also not in the k6 suites or benchmarks.
 - CORS and forwarded-headers configuration (put a proxy in front, or add middleware in `internal/app`).
 - Rate limiting and API versioning (both are open items in the ASP.NET repo's improvement list too).
 - A job dashboard (River UI is a separate component) and the typed span-attribute helper generator from
