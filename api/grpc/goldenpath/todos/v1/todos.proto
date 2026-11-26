@@ -1,9 +1,8 @@
-// The gRPC contract mirrors the operations in ../../../../openapi/todos.openapi.yaml
-// and ../../../../graphql/todos.graphql. Field presence follows the other contracts:
+// The gRPC contract mirrors the operations in the OpenAPI and GraphQL todos contracts. Field presence follows the other contracts:
 // `optional` and message-typed fields are nullable, everything else is required.
 //
 // Errors: a business-rule violation is INVALID_ARGUMENT with a google.rpc.BadRequest
-// detail (one FieldViolation per message, field = property name); a missing todo is
+// detail (one FieldViolation per message, field = the request property in camelCase); a missing todo is
 // NOT_FOUND; a missing session is UNAUTHENTICATED. Nothing else is documented, and
 // unexpected failures are INTERNAL without detail.
 syntax = "proto3";
